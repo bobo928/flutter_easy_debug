@@ -16,7 +16,7 @@ class EasyDebugHttpClient extends http.BaseClient {
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     final manager = EasyDebugManager();
-    if (!manager.enabled || manager.config.maxLogCount == 0) {
+    if (!manager.isRecording || manager.config.maxLogCount == 0) {
       return _inner.send(request);
     }
     final timer = Stopwatch()..start();

@@ -254,4 +254,39 @@ void main() {
     expect(log.response!.bodyTruncated, isTrue);
     client.close();
   });
+
+  test(
+    'pausing skips new requests while an existing response still completes',
+    () async {
+      final source = StreamController<List<int>>();
+      var calls = 0;
+      final client = EasyDebugHttpClient(
+        TestClient((_) async {
+          calls++;
+          return calls == 1
+              ? http.StreamedResponse(source.stream, 200)
+              : http.StreamedResponse(
+                  Stream.value(utf8.encode('after pause')),
+                  200,
+                );
+        }),
+      );
+      final response = await client.send(
+        http.Request('GET', Uri.https('test.local', '/before')),
+      );
+      final done = response.stream.drain<void>();
+      manager.pauseRecording();
+      expect(
+        (await client.get(Uri.https('test.local', '/during'))).body,
+        'after pause',
+      );
+      source.add(utf8.encode('completed'));
+      await source.close();
+      await done;
+      expect(manager.logsNotifier.value.length, 1);
+      expect(manager.logsNotifier.value.single.response!.body, 'completed');
+      expect(manager.logsNotifier.value.single.isPending, isFalse);
+      client.close();
+    },
+  );
 }

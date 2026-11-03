@@ -7,11 +7,30 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'capture.dart';
 import 'config_model.dart';
 import 'log_model.dart';
+import 'log_export.dart';
+import 'log_query.dart';
 
-/// Values update synchronously; burst notifications coalesce per event loop.
-class _BatchedNotifier<T> extends ValueNotifier<T> {
-  _BatchedNotifier(super.value);
+/// Immutable snapshots are materialized on demand, once per observed revision.
+class _SnapshotNotifier<T> extends ValueNotifier<List<T>> {
+  _SnapshotNotifier(this._read) : super(const []);
+  final Iterable<T> Function() _read;
+  List<T>? _snapshot;
   Timer? _notification;
+
+  @override
+  List<T> get value => _snapshot ??= List<T>.unmodifiable(_read());
+
+  @override
+  set value(List<T> value) {
+    _snapshot = List<T>.unmodifiable(value);
+    notifyListeners();
+  }
+
+  void invalidate() {
+    _snapshot = null;
+    notifyListeners();
+  }
+
   @override
   void notifyListeners() {
     if (!hasListeners) return;
@@ -47,13 +66,27 @@ class EasyDebugManager {
   EasyDebugConfig get config => configNotifier.value;
   set config(EasyDebugConfig value) => updateConfig(value);
   bool get enabled => config.enabled;
+  final pausedNotifier = ValueNotifier(false);
+  bool get isPaused => pausedNotifier.value;
+  bool get isRecording => enabled && !isPaused;
+
+  /// Stops new captures without deleting records. In-flight requests still finish.
+  void pauseRecording() {
+    if (enabled) pausedNotifier.value = true;
+  }
+
+  void resumeRecording() => pausedNotifier.value = false;
 
   final _logs = <String, NetworkLog>{};
   final _generalLogs = ListQueue<GeneralLog>();
-  final ValueNotifier<List<NetworkLog>> logsNotifier = _BatchedNotifier([]);
-  final ValueNotifier<List<GeneralLog>> generalLogsNotifier = _BatchedNotifier(
-    [],
+  late final _networkNotifier = _SnapshotNotifier<NetworkLog>(
+    () => _logs.values.toList().reversed,
   );
+  late final _generalNotifier = _SnapshotNotifier<GeneralLog>(
+    () => _generalLogs,
+  );
+  ValueNotifier<List<NetworkLog>> get logsNotifier => _networkNotifier;
+  ValueNotifier<List<GeneralLog>> get generalLogsNotifier => _generalNotifier;
   final currentEnvNotifier = ValueNotifier<AppEnvironment?>(null);
   List<AppEnvironment> _availableEnvironments = const [];
   List<AppEnvironment> get availableEnvironments => _availableEnvironments;
@@ -111,6 +144,18 @@ class EasyDebugManager {
   String get currentBaseUrl => currentEnvNotifier.value?.baseUrl ?? '';
   NetworkLog? getLog(String id) => _logs[id];
 
+  List<NetworkLog> queryNetworkLogs(NetworkLogQuery query) =>
+      List.unmodifiable(logsNotifier.value.where(query.matches));
+  List<GeneralLog> queryGeneralLogs(GeneralLogQuery query) =>
+      List.unmodifiable(generalLogsNotifier.value.where(query.matches));
+
+  String exportHar({NetworkLogQuery query = const NetworkLogQuery()}) =>
+      EasyDebugExport.har(queryNetworkLogs(query), config: config);
+  String exportNetworkJson({NetworkLogQuery query = const NetworkLogQuery()}) =>
+      EasyDebugExport.networkJson(queryNetworkLogs(query), config: config);
+  String exportGeneralJson({GeneralLogQuery query = const GeneralLogQuery()}) =>
+      EasyDebugExport.generalJson(queryGeneralLogs(query));
+
   void updateConfig(EasyDebugConfig newConfig) {
     if (newConfig.maxLogCount < 0 ||
         newConfig.maxGeneralLogCount < 0 ||
@@ -122,6 +167,7 @@ class EasyDebugManager {
     }
     configNotifier.value = newConfig;
     if (!enabled) {
+      pausedNotifier.value = false;
       clearLogs();
       return;
     }
@@ -143,7 +189,7 @@ class EasyDebugManager {
   }
 
   void addLog(NetworkLog log) {
-    if (!enabled || config.maxLogCount == 0) return;
+    if (!isRecording || config.maxLogCount == 0) return;
     _logs[log.id] = _capture(log);
     _trim();
     _publishNetwork();
@@ -151,63 +197,18 @@ class EasyDebugManager {
 
   void updateLog(NetworkLog updatedLog) {
     if (!enabled || !_logs.containsKey(updatedLog.id)) return;
-    _logs[updatedLog.id] = _capture(updatedLog);
+    _logs[updatedLog.id] = captureNetworkLog(
+      updatedLog,
+      config,
+      previous: _logs[updatedLog.id],
+    );
     _publishNetwork();
   }
 
-  NetworkLog _capture(NetworkLog log) {
-    final request = log.request;
-    final response = log.response;
-    final requestBody = captureBody(
-      request?.body,
-      config,
-      sourceTruncated: request?.bodyTruncated ?? false,
-    );
-    final responseBody = captureBody(
-      response?.body,
-      config,
-      sourceTruncated: response?.bodyTruncated ?? false,
-    );
-    final error = log.error;
-    return log.copyWith(
-      method: boundedText(log.method, 32),
-      url: captureUrl(log.url, config),
-      request: request == null
-          ? null
-          : RequestDetails(
-              headers: captureHeaders(request.headers, config),
-              body: requestBody.text,
-              contentType: boundedText(request.contentType, 256),
-              bodyTruncated: request.bodyTruncated || requestBody.truncated,
-            ),
-      response: response == null
-          ? null
-          : ResponseDetails(
-              statusCode: response.statusCode,
-              headers: captureHeaders(response.headers, config),
-              body: responseBody.text,
-              timestamp: response.timestamp,
-              bodyTruncated: response.bodyTruncated || responseBody.truncated,
-            ),
-      error: error == null
-          ? null
-          : ErrorDetails(
-              errorMessage: boundedText(
-                error.errorMessage,
-                config.maxMessageLength,
-              ),
-              errorType: error.errorType == null
-                  ? null
-                  : boundedText(error.errorType!, 128),
-              stackTrace: error.stackTrace == null
-                  ? null
-                  : boundedText(error.stackTrace!, config.maxMessageLength),
-            ),
-    );
-  }
+  NetworkLog _capture(NetworkLog log) => captureNetworkLog(log, config);
 
   void addGeneralLog(String message, {String? level}) {
-    if (!enabled || config.maxGeneralLogCount == 0) return;
+    if (!isRecording || config.maxGeneralLogCount == 0) return;
     _generalLogs.add(
       GeneralLog(
         timestamp: DateTime.now(),
@@ -235,10 +236,8 @@ class EasyDebugManager {
     }
   }
 
-  void _publishNetwork() =>
-      logsNotifier.value = List.unmodifiable(_logs.values.toList().reversed);
-  void _publishGeneral() =>
-      generalLogsNotifier.value = List.unmodifiable(_generalLogs);
+  void _publishNetwork() => _networkNotifier.invalidate();
+  void _publishGeneral() => _generalNotifier.invalidate();
 }
 
 /// Explicit application logging without a global print hook.

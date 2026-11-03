@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'dart:async';
+import 'dart:convert';
 import 'dart:ui' as ui;
 
 import 'package:easy_debug/easy_debug.dart';
@@ -93,6 +95,41 @@ void main() {
       manager.clearLogs();
       await tester.pump();
     });
+  }
+
+  Future<String> copiedText(WidgetTester tester, String tooltip) async {
+    final copied = Completer<String>();
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied.complete((call.arguments as Map)['text'] as String);
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    await tester.tap(find.byTooltip(tooltip));
+    await tester.pump();
+    final watch = Stopwatch()..start();
+    while (!copied.isCompleted && watch.elapsed < const Duration(seconds: 5)) {
+      // Drive fake Flutter frames while allowing the native compute isolate to finish.
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+      await tester.pump();
+    }
+    expect(
+      copied.isCompleted,
+      isTrue,
+      reason: 'Clipboard export did not finish',
+    );
+    return copied.future;
   }
 
   NetworkLog sample(String path, {int? code = 200}) =>
@@ -261,6 +298,103 @@ void main() {
       await tester.tap(find.byTooltip('Open Easy Debug'));
       await tester.pumpAndSettle();
       expect(find.text('Easy Debug'), findsOneWidget);
+    },
+  );
+
+  testWidgets('pause and resume keep prior records visible', (tester) async {
+    manager.addLog(sample('/before'));
+    await showApp(tester);
+    await tester.tap(find.byTooltip('Pause capture'));
+    await tester.pumpAndSettle();
+    manager.addLog(sample('/ignored'));
+    EasyDebug.log('ignored');
+    expect(manager.logsNotifier.value.length, 1);
+    expect(find.text('Capture paused'), findsOneWidget);
+    expect(find.byTooltip('Resume capture'), findsOneWidget);
+    await capture(tester, 'capture_paused');
+    await tester.tap(find.byTooltip('Resume capture'));
+    manager.addLog(sample('/after'));
+    await tester.pumpAndSettle();
+    expect(manager.logsNotifier.value.length, 2);
+    expect(find.text('/after'), findsOneWidget);
+  });
+
+  testWidgets(
+    'advanced filters survive details and HAR exports only the visible selection',
+    (tester) async {
+      manager.addLog(sample('/fast'));
+      manager.addLog(
+        sample('/post').copyWith(method: 'POST', durationMs: 1400),
+      );
+      manager.addLog(
+        sample('/other').copyWith(
+          method: 'POST',
+          url: 'https://other.example.com/other',
+          durationMs: 2000,
+        ),
+      );
+      await showApp(tester);
+      await tester.tap(find.byTooltip('Advanced filters'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(DropdownMenu<String>).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(MenuItemButton, 'POST'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(DropdownMenu<String>).last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(MenuItemButton, 'api.example.com'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Slow requests · 1 s+'));
+      await tester.pumpAndSettle();
+      expect(find.text('1 / 3 requests'), findsOneWidget);
+      expect(find.text('/fast'), findsNothing);
+      expect(find.text('/other'), findsNothing);
+      await capture(tester, 'advanced_filters');
+      final har = jsonDecode(await copiedText(tester, 'Copy filtered HAR'));
+      expect(har['log']['entries'].length, 1);
+      expect(har['log']['entries'].single['request']['method'], 'POST');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('/post'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Copy as cURL'), findsOneWidget);
+      final curl = await copiedText(tester, 'Copy as cURL');
+      expect(curl, contains("--request 'POST'"));
+      expect(curl, contains('https://api.example.com/post'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Back to requests'));
+      await tester.pumpAndSettle();
+      expect(find.text('1 / 3 requests'), findsOneWidget);
+      await tester.tap(find.byTooltip('Reset filters'));
+      await tester.pumpAndSettle();
+      expect(find.text('3 / 3 requests'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'general logs combine severity and text search with JSON export',
+    (tester) async {
+      EasyDebug.log('Catalogue loaded', level: 'INFO');
+      EasyDebug.log('Could not load catalogue', level: 'ERROR');
+      await showApp(tester, brightness: Brightness.dark);
+      await tester.tap(find.text('Logs'));
+      await tester.pumpAndSettle();
+      await tester.drag(find.byType(ListView).first, const Offset(-350, 0));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Error'));
+      await tester.enterText(find.byType(TextField), 'catalogue');
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pumpAndSettle();
+      expect(find.text('Catalogue loaded'), findsNothing);
+      expect(find.text('Could not load catalogue'), findsOneWidget);
+      final records = jsonDecode(
+        await copiedText(tester, 'Copy filtered logs as JSON'),
+      );
+      expect(records.length, 1);
+      expect(records.single['level'], 'ERROR');
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Copied'), findsOneWidget);
+      expect(tester.takeException(), isNull);
     },
   );
 }

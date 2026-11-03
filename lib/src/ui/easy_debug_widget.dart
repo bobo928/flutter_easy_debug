@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../core/config_model.dart';
 import '../core/log_manager.dart';
 import '../core/log_model.dart';
+import '../core/log_query.dart';
 import 'debug_theme.dart';
 import 'general_logs_view.dart';
 import 'log_detail_page.dart';
@@ -27,6 +28,8 @@ class _EasyDebugWidgetState extends State<EasyDebugWidget> {
   Offset _position = const Offset(20, 100);
   DebugViewMode _mode = DebugViewMode.network;
   NetworkLog? _selectedLog;
+  NetworkLogQuery _networkQuery = const NetworkLogQuery();
+  GeneralLogQuery _generalQuery = const GeneralLogQuery();
 
   @override
   void initState() {
@@ -168,20 +171,21 @@ class _EasyDebugWidgetState extends State<EasyDebugWidget> {
           padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
           child: Row(
             children: [
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(10),
-                  child: Icon(
-                    Icons.bug_report_outlined,
-                    color: Theme.of(context).colorScheme.onPrimaryContainer,
+              if (constraints.maxWidth >= 360)
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Icon(
+                      Icons.bug_report_outlined,
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 12),
+              if (constraints.maxWidth >= 360) const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -202,6 +206,20 @@ class _EasyDebugWidgetState extends State<EasyDebugWidget> {
                         style: Theme.of(context).textTheme.labelSmall,
                       ),
                   ],
+                ),
+              ),
+              ValueListenableBuilder<bool>(
+                valueListenable: EasyDebugManager().pausedNotifier,
+                builder: (_, paused, _) => IconButton(
+                  tooltip: paused ? 'Resume capture' : 'Pause capture',
+                  icon: Icon(
+                    paused
+                        ? Icons.play_circle_outline
+                        : Icons.pause_circle_outline,
+                  ),
+                  onPressed: paused
+                      ? EasyDebugManager().resumeRecording
+                      : EasyDebugManager().pauseRecording,
                 ),
               ),
               IconButton(
@@ -247,9 +265,14 @@ class _EasyDebugWidgetState extends State<EasyDebugWidget> {
         Expanded(
           child: switch (_mode) {
             DebugViewMode.network => LogListView(
+              initialQuery: _networkQuery,
+              onQueryChanged: (query) => _networkQuery = query,
               onSelect: (log) => setState(() => _selectedLog = log),
             ),
-            DebugViewMode.generalLogs => const GeneralLogsView(),
+            DebugViewMode.generalLogs => GeneralLogsView(
+              initialQuery: _generalQuery,
+              onQueryChanged: (query) => _generalQuery = query,
+            ),
             DebugViewMode.settings => const _EnvironmentSettings(),
           },
         ),
@@ -265,14 +288,21 @@ class _EasyDebugWidgetState extends State<EasyDebugWidget> {
                 ),
                 const SizedBox(width: 7),
                 Expanded(
-                  child: ValueListenableBuilder<AppEnvironment?>(
-                    valueListenable: EasyDebugManager().currentEnvNotifier,
-                    builder: (_, env, _) => Text(
-                      env?.name ?? 'Live capture',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.labelSmall,
-                    ),
+                  child: ValueListenableBuilder<bool>(
+                    valueListenable: EasyDebugManager().pausedNotifier,
+                    builder: (_, paused, _) =>
+                        ValueListenableBuilder<AppEnvironment?>(
+                          valueListenable:
+                              EasyDebugManager().currentEnvNotifier,
+                          builder: (_, env, _) => Text(
+                            paused
+                                ? 'Capture paused'
+                                : env?.name ?? 'Live capture',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                        ),
                   ),
                 ),
                 Flexible(

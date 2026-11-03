@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../core/log_manager.dart';
 import '../core/log_model.dart';
+import '../core/log_export.dart';
+import 'debug_copy_button.dart';
 import 'debug_theme.dart';
 
 class LogDetailPage extends StatefulWidget {
@@ -56,6 +58,14 @@ class _LogDetailPageState extends State<LogDetailPage> {
                     onPressed: widget.onBack,
                   ),
             actions: [
+              DebugCopyButton(
+                tooltip: 'Copy as cURL',
+                icon: Icons.terminal,
+                content: () => EasyDebugExport.curl(
+                  _latest,
+                  config: EasyDebugManager().config,
+                ),
+              ),
               IconButton(
                 tooltip: 'Copy details',
                 icon: const Icon(Icons.copy_outlined),

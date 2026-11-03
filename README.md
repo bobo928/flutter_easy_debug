@@ -9,10 +9,17 @@ Open the floating button to see requests, inspect responses, copy details and sw
   <img src="screenshots/3.png" width="30%" alt="Live request details" />
 </p>
 
+<p align="center">
+  <img src="screenshots/6.png" width="30%" alt="Method, host and slow-request filters" />
+  <img src="screenshots/7.png" width="30%" alt="Paused capture keeps requests available" />
+</p>
+
 ## Features
 
 - Dio interceptor and an http client wrapper; existing caller responses and errors pass through.
 - Request cards, URL/method search, success/error/pending filters and live details.
+- Method/host/slow-request filters, a separate cancelled state and query-preserving navigation.
+- Filtered HAR export, JSON log export, cURL templates and pause/resume capture.
 - Light and dark themes, adaptive panel width, draggable button with screen bounds, keyboard-aware layout.
 - Request/response headers and body previews, duration, errors and clipboard copy.
 - Bounded network/general logs and body previews; burst notifications are coalesced.
@@ -90,6 +97,40 @@ Ordinary `print()` and other isolates are not intercepted. Levels are optional. 
 
 Call `EasyDebugManager().shutdown()` to stop recording, clear retained logs and restore the debugPrint hook installed by this package. It does not overwrite a replacement hook installed later by another component. Re-enable configuration and call `init()` to start a new session.
 
+## Filter, pause and export
+
+Use the tune button in Network to combine method, host and slow-request filters. Slow requests are those with a recorded duration of at least one second; pending requests are not treated as slow. Status filters distinguish success, error, pending and cancelled requests. Filters survive opening a detail page and switching console tabs.
+
+The pause button stops **new** network and general-log captures while keeping existing records visible. Responses for requests already recorded continue to update. Resume starts capturing new requests again; pause does not change your app's network behavior.
+
+```dart
+final manager = EasyDebugManager();
+manager.pauseRecording();
+manager.resumeRecording();
+
+const query = NetworkLogQuery(
+  method: 'POST',
+  host: 'api.example.com',
+  status: NetworkLogStatus.error,
+  minDurationMs: 1000,
+);
+final requests = manager.queryNetworkLogs(query);
+final har = manager.exportHar(query: query);
+final json = manager.exportNetworkJson(query: query);
+final curl = requests.isEmpty ? '' : EasyDebugExport.curl(requests.first);
+final messages = manager.exportGeneralJson(
+  query: const GeneralLogQuery(search: 'retry', severity: GeneralLogSeverity.warning),
+);
+```
+
+The Network download icon copies only the filtered requests as HAR. The Logs download icon copies filtered messages as JSON, and details provide a cURL copy button. These actions copy text; they never replay a request, upload logs or write files automatically.
+
+Whole-list export buttons use asynchronous encoders so native platforms can encode in a compute isolate. Programmatic callers can use `EasyDebugExport.harAsync(records, config: manager.config)` or `generalJsonAsync(records)`. Flutter Web compute runs on the current event loop; export remains bounded by configured retention/body limits.
+
+HAR output follows the [HAR 1.2 structure](https://github.com/ahmadnassri/har-spec/blob/master/versions/1.2.md). It contains **captured previews**, not original wire payloads. Unknown wire/header sizes are `-1`; content size is the exported text size. Only total elapsed time is available and is placed in the wait field with an explanatory comment; DNS/TLS/send/receive phases and HTTP version are not measured. Extra metadata records pending, cancellation and truncation. No browser-import compatibility claim is made for every HAR consumer.
+
+cURL output is a **POSIX-shell template**. Credentials remain masked, truncated/unavailable bodies are omitted, and stale framing headers are left for cURL to compute. Restore credentials and the full original body before using it for reproduction. JSON/HAR/cURL exports reapply the current capture policy. Plain log messages and error text still require application-specific scrubbing.
+
 ## Resource limits and capture policy
 
 ```dart
@@ -111,7 +152,7 @@ Zero record capacity disables retention of that log type. Limits must be non-neg
 - General message length is also a UTF-8 byte budget. Headers are limited to 100 entries, with bounded names and values.
 - Sensitive headers (Authorization, Cookie, Set-Cookie, Proxy-Authorization, X-API-Key) are masked by default. Common credential keys are masked in structured JSON and URL queries. Customize `sensitiveHeaders` and `sensitiveKeys` if your API uses other names.
 - Plain-text bodies, error text and application log messages are not automatically scrubbed. Avoid logging secrets in those channels.
-- Stored log values update immediately. Subscriber notifications are batched once per event-loop turn, so a burst does not cause a notification for every log entry.
+- Reading a notifier returns current values immediately. Immutable list snapshots are generated lazily and cached until the next change; subscriber notifications are batched once per event-loop turn.
 - Logs are held in memory only; environment selection is the only persisted data.
 
 Keep debug capture disabled for normal release distribution. If you explicitly enable it, apply the policies appropriate to that build.
@@ -159,6 +200,8 @@ flutter test --no-pub
 ```
 
 Tests use local adapters and streams, not public API endpoints. They cover retention, redaction, repeated initialization, concurrent HTTP requests, stream errors/cancellation/backpressure, and console interaction at phone and desktop sizes.
+
+See [PERFORMANCE.md](PERFORMANCE.md) for the reproducible ingestion benchmark and its limits.
 
 See [CHANGELOG.md](CHANGELOG.md) for changes and [PUBLISHING.md](PUBLISHING.md) for release checks.
 

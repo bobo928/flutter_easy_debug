@@ -1,5 +1,9 @@
 ## Unreleased
 
+* Generate list snapshots lazily, retain cached sanitized details on ordinary response updates and add a reproducible ingestion benchmark.
+* Add pause/resume without deleting retained logs, method/host/slow/cancelled filters, general-log level/search filters and programmatic query APIs.
+* Add sanitized HAR/JSON exports, POSIX cURL templates, background whole-list encoding on native platforms and clipboard feedback.
+* Preserve console filter selections across details and tabs, and omit credentials embedded in URLs or redirect locations.
 * Bound network/general logs, UTF-8 body/message previews and structured body traversal; coalesce subscriber notifications during bursts.
 * Use unique request IDs and constant-time log lookup; remove the unused Dio request map.
 * Preserve http stream errors, forward pause/resume/cancellation and capture headers before body consumption without altering caller payloads.

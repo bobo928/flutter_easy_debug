@@ -10,7 +10,7 @@ class EasyDebugDioInterceptor extends Interceptor {
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
     final manager = EasyDebugManager();
-    if (manager.enabled && manager.config.maxLogCount > 0) {
+    if (manager.isRecording && manager.config.maxLogCount > 0) {
       final log =
           NetworkLog(
               timestamp: DateTime.now(),

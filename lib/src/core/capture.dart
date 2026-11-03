@@ -24,30 +24,55 @@ Map<String, dynamic> captureHeaders(
   return Map.unmodifiable(
     Map.fromEntries(
       headers.entries.take(100).map((entry) {
+        final text = _headerText(entry.value, config.maxMessageLength);
         return MapEntry(
           boundedText(entry.key, 256),
           hidden.contains(entry.key.toLowerCase())
               ? '[REDACTED]'
-              : boundedText(entry.value.toString(), config.maxMessageLength),
+              : entry.key.toLowerCase() == 'location'
+              ? captureUrl(text, config)
+              : boundedText(text, config.maxMessageLength),
         );
       }),
     ),
   );
 }
 
+String _headerText(dynamic value, int limit) {
+  if (value is! Iterable) return boundedText(value.toString(), limit);
+  final buffer = StringBuffer();
+  var bytes = 0;
+  for (final item in value.take(20)) {
+    if (bytes >= limit) break;
+    if (buffer.isNotEmpty) {
+      final separator = boundedText(', ', limit - bytes);
+      buffer.write(separator);
+      bytes += separator.length;
+    }
+    final text = boundedText(item.toString(), limit - bytes);
+    bytes += utf8.encode(text).length;
+    buffer.write(text);
+  }
+  return buffer.toString();
+}
+
 String captureUrl(String url, EasyDebugConfig config) {
   final uri = Uri.tryParse(url);
-  if (uri == null || !uri.hasQuery) return boundedText(url, 8192);
+  if (uri == null) return boundedText(url, 8192);
   final hidden = config.sensitiveKeys.map((e) => e.toLowerCase()).toSet();
   return boundedText(
     uri
+        .removeFragment()
         .replace(
-          queryParameters: uri.queryParametersAll.map(
-            (key, value) => MapEntry(
-              key,
-              hidden.contains(key.toLowerCase()) ? ['[REDACTED]'] : value,
-            ),
-          ),
+          userInfo: '',
+          queryParameters: !uri.hasQuery
+              ? null
+              : uri.queryParametersAll.map(
+                  (key, value) => MapEntry(
+                    key,
+                    hidden.contains(key.toLowerCase()) ? ['[REDACTED]'] : value,
+                  ),
+                ),
         )
         .toString(),
     8192,
@@ -159,4 +184,72 @@ class _BodyWriter {
       append(value is String && !plainText ? jsonEncode(prefix) : prefix);
     }
   }
+}
+
+NetworkLog captureNetworkLog(
+  NetworkLog log,
+  EasyDebugConfig config, {
+  NetworkLog? previous,
+}) {
+  // Caller-mutated stored records must still go through full sanitization.
+  if (identical(log, previous)) previous = null;
+  final request = log.request;
+  final response = log.response;
+  final keepRequest = previous != null && identical(request, previous.request);
+  final keepResponse =
+      previous != null && identical(response, previous.response);
+  final requestBody = keepRequest
+      ? const CapturedBody(null, false)
+      : captureBody(
+          request?.body,
+          config,
+          sourceTruncated: request?.bodyTruncated ?? false,
+        );
+  final responseBody = keepResponse
+      ? const CapturedBody(null, false)
+      : captureBody(
+          response?.body,
+          config,
+          sourceTruncated: response?.bodyTruncated ?? false,
+        );
+  final error = log.error;
+  return log.copyWith(
+    method: boundedText(log.method, 32),
+    url: previous?.url == log.url ? log.url : captureUrl(log.url, config),
+    request: keepRequest
+        ? request
+        : request == null
+        ? null
+        : RequestDetails(
+            headers: captureHeaders(request.headers, config),
+            body: requestBody.text,
+            contentType: boundedText(request.contentType, 256),
+            bodyTruncated: request.bodyTruncated || requestBody.truncated,
+          ),
+    response: keepResponse
+        ? response
+        : response == null
+        ? null
+        : ResponseDetails(
+            statusCode: response.statusCode,
+            headers: captureHeaders(response.headers, config),
+            body: responseBody.text,
+            timestamp: response.timestamp,
+            bodyTruncated: response.bodyTruncated || responseBody.truncated,
+          ),
+    error: error == null
+        ? null
+        : ErrorDetails(
+            errorMessage: boundedText(
+              error.errorMessage,
+              config.maxMessageLength,
+            ),
+            errorType: error.errorType == null
+                ? null
+                : boundedText(error.errorType!, 128),
+            stackTrace: error.stackTrace == null
+                ? null
+                : boundedText(error.stackTrace!, config.maxMessageLength),
+          ),
+  );
 }
