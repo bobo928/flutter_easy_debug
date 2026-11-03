@@ -1,25 +1,21 @@
-# Publishing to pub.dev
+# Publishing
 
-Follow these steps to publish `easy_debug` to pub.dev.
+Before publishing a new version:
 
-## 1. Final Review
-- **Repository URL**: Open `pubspec.yaml` and uncomment/fill in the `repository` line with your GitHub URL. This is critical for pub.dev verification score.
-- **License**: Ensure `LICENSE` file has your correct name (already done).
+1. Update the version in pubspec.yaml and the HAR creator version in lib/src/core/log_export.dart, and move the unreleased Changelog entries to that version.
+2. Verify the repository metadata and supported SDK/platform claims.
+3. Run the formatting, analysis and test commands from README.md.
+4. Inspect the example on supported devices, including a profile build for frame/memory checks and a release build to confirm the default disabled behavior.
+5. Run the packaging check:
 
-## 2. Dry Run
-Run this command to check for errors:
-```bash
+```sh
 flutter pub publish --dry-run
 ```
-Fix any warnings that appear.
 
-## 3. Publish
-```bash
+Only publish after reviewing the archive and warnings:
+
+```sh
 flutter pub publish
 ```
-1. Type `y` to confirm.
-2. Click the link to zero-auth with your Google Account.
-3. Success!
 
-## 4. Verification
-Visit [pub.dev](https://pub.dev/packages/easy_debug) to see your package.
+Publishing is a separate release action. The CI workflow and a dry run do not publish the package.

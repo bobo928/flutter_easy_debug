@@ -1,101 +1,151 @@
-import 'dart:ui';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
-import '../core/log_manager.dart';
+import 'package:flutter/services.dart';
+
 import '../core/config_model.dart';
-import 'log_list_view.dart';
+import '../core/log_manager.dart';
+import '../core/log_model.dart';
+import '../core/log_query.dart';
+import 'debug_theme.dart';
 import 'general_logs_view.dart';
+import 'log_detail_page.dart';
+import 'log_list_view.dart';
 
 enum DebugViewMode { network, generalLogs, settings }
 
 class EasyDebugWidget extends StatefulWidget {
-  final Widget child;
-
   const EasyDebugWidget({super.key, required this.child});
-
-  static void close(BuildContext context) {
-    final state = context.findAncestorStateOfType<_EasyDebugWidgetState>();
-    state?.closeConsole();
-  }
-
+  final Widget child;
+  static void close(BuildContext context) =>
+      context.findAncestorStateOfType<_EasyDebugWidgetState>()?.closeConsole();
   @override
   State<EasyDebugWidget> createState() => _EasyDebugWidgetState();
 }
 
 class _EasyDebugWidgetState extends State<EasyDebugWidget> {
-  bool _isConsoleVisible = false;
-  // Initial position for the floating button
-  Offset _buttonPosition = const Offset(20, 100);
-  LogFilter _currentFilter = LogFilter.all;
-  DebugViewMode _viewMode = DebugViewMode.network;
+  bool _visible = false;
+  Offset _position = const Offset(20, 100);
+  DebugViewMode _mode = DebugViewMode.network;
+  NetworkLog? _selectedLog;
+  NetworkLogQuery _networkQuery = const NetworkLogQuery();
+  GeneralLogQuery _generalQuery = const GeneralLogQuery();
 
-  void closeConsole() {
-    if (mounted) {
-      setState(() {
-        _isConsoleVisible = false;
-      });
-    }
+  @override
+  void initState() {
+    super.initState();
+    EasyDebugManager().configNotifier.addListener(_onConfigChanged);
+  }
+
+  void _onConfigChanged() {
+    if (!EasyDebugManager().enabled) closeConsole();
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        widget.child,
-        Overlay(
-          initialEntries: [
-            OverlayEntry(
-              builder: (context) => Stack(
-                children: [
-                  if (_isConsoleVisible)
-                    Positioned.fill(
-                      child: Material(
-                        color: Colors.black54,
+  void dispose() {
+    EasyDebugManager().configNotifier.removeListener(_onConfigChanged);
+    super.dispose();
+  }
+
+  void closeConsole() => setState(() {
+    _visible = false;
+    _selectedLog = null;
+  });
+
+  @override
+  Widget build(BuildContext context) => _ConsoleOverlay(
+    child: ValueListenableBuilder<EasyDebugConfig>(
+      valueListenable: EasyDebugManager().configNotifier,
+      child: widget.child,
+      builder: (context, config, child) {
+        if (!config.enabled) return child!;
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final padding = MediaQuery.paddingOf(context);
+            final maxX = math.max(0.0, constraints.maxWidth - 64);
+            final maxY = math.max(
+              padding.top,
+              constraints.maxHeight - padding.bottom - 64,
+            );
+            final position = Offset(
+              _position.dx.clamp(0.0, maxX),
+              _position.dy.clamp(padding.top, maxY),
+            );
+            return Stack(
+              children: [
+                child!,
+                if (!_visible)
+                  Positioned(
+                    left: position.dx,
+                    top: position.dy,
+                    child: GestureDetector(
+                      onPanUpdate: (details) => setState(() {
+                        _position = Offset(
+                          (position.dx + details.delta.dx).clamp(0.0, maxX),
+                          (position.dy + details.delta.dy).clamp(
+                            padding.top,
+                            maxY,
+                          ),
+                        );
+                      }),
+                      child: SizedBox(
+                        width: 56,
+                        height: 56,
+                        child: IconButton.filled(
+                          tooltip: 'Open Easy Debug',
+                          icon: const Icon(Icons.bug_report_outlined),
+                          onPressed: () => setState(() => _visible = true),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (_visible)
+                  Positioned.fill(
+                    bottom: MediaQuery.viewInsetsOf(context).bottom,
+                    child: CallbackShortcuts(
+                      bindings: {
+                        const SingleActivator(LogicalKeyboardKey.escape):
+                            closeConsole,
+                      },
+                      child: Focus(
+                        autofocus: true,
                         child: Stack(
                           children: [
-                            GestureDetector(
-                              onTap: () =>
-                                  setState(() => _isConsoleVisible = false),
-                              child: Container(color: Colors.transparent),
+                            Positioned.fill(
+                              child: GestureDetector(
+                                onTap: closeConsole,
+                                child: const ColoredBox(
+                                  color: Color(0x66000000),
+                                ),
+                              ),
                             ),
-                            Positioned(
-                              top: 100,
-                              left: 20,
-                              right: 20,
-                              bottom: 50,
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(16),
-                                child: BackdropFilter(
-                                  filter: ImageFilter.blur(
-                                    sigmaX: 10.0,
-                                    sigmaY: 10.0,
+                            SafeArea(
+                              minimum: const EdgeInsets.all(12),
+                              child: Center(
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 760,
+                                    maxHeight: 840,
                                   ),
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withValues(
-                                        alpha: 0.7,
+                                  child: RepaintBoundary(
+                                    key: const ValueKey('easy_debug_panel'),
+                                    child: Theme(
+                                      data: debugTheme(
+                                        Theme.of(context).brightness,
                                       ),
-                                      borderRadius: BorderRadius.circular(16),
-                                      border: Border.all(
-                                        color: Colors.white.withValues(
-                                          alpha: 0.2,
-                                        ),
-                                        width: 1.5,
+                                      child: Material(
+                                        elevation: 12,
+                                        borderRadius: BorderRadius.circular(24),
+                                        clipBehavior: Clip.antiAlias,
+                                        child: _selectedLog == null
+                                            ? _buildConsole()
+                                            : LogDetailPage(
+                                                log: _selectedLog!,
+                                                onBack: () => setState(
+                                                  () => _selectedLog = null,
+                                                ),
+                                              ),
                                       ),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.black.withValues(
-                                            alpha: 0.1,
-                                          ),
-                                          blurRadius: 10,
-                                          spreadRadius: 2,
-                                        ),
-                                      ],
-                                    ),
-                                    child: Column(
-                                      children: [
-                                        _buildHeader(),
-                                        Expanded(child: _buildContent()),
-                                      ],
                                     ),
                                   ),
                                 ),
@@ -105,254 +155,269 @@ class _EasyDebugWidgetState extends State<EasyDebugWidget> {
                         ),
                       ),
                     ),
-                  if (!_isConsoleVisible)
-                    Positioned(
-                      left: _buttonPosition.dx,
-                      top: _buttonPosition.dy,
-                      child: Draggable(
-                        feedback: _buildFloatingButton(isDragging: true),
-                        childWhenDragging: Container(),
-                        onDragEnd: (details) {
-                          setState(() {
-                            _buttonPosition = details.offset;
-                          });
-                        },
-                        child: GestureDetector(
-                          onTap: () {
-                            setState(() {
-                              _isConsoleVisible = true;
-                            });
-                          },
-                          child: _buildFloatingButton(),
-                        ),
+                  ),
+              ],
+            );
+          },
+        );
+      },
+    ),
+  );
+
+  Widget _buildConsole() => LayoutBuilder(
+    builder: (context, constraints) => Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
+          child: Row(
+            children: [
+              if (constraints.maxWidth >= 360)
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Icon(
+                      Icons.bug_report_outlined,
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
+                  ),
+                ),
+              if (constraints.maxWidth >= 360) const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Easy Debug',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
                       ),
                     ),
-                ],
+                    if (constraints.maxHeight >= 440)
+                      Text(
+                        'Your app, under the lens',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                  ],
+                ),
               ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildContent() {
-    switch (_viewMode) {
-      case DebugViewMode.network:
-        return Column(
-          children: [
-            _buildFilterTabs(),
-            Expanded(child: LogListView(filter: _currentFilter)),
-          ],
-        );
-      case DebugViewMode.generalLogs:
-        return const GeneralLogsView();
-      case DebugViewMode.settings:
-        return _buildSettingsView();
-    }
-  }
-
-  Widget _buildFloatingButton({bool isDragging = false}) {
-    return Material(
-      color: Colors.transparent,
-      elevation: isDragging ? 6 : 0,
-      child: Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: Colors.blueAccent,
-          shape: BoxShape.circle,
-          boxShadow: [
-            if (!isDragging)
-              BoxShadow(
-                color: Colors.black26,
-                blurRadius: 4,
-                offset: const Offset(0, 2),
+              ValueListenableBuilder<bool>(
+                valueListenable: EasyDebugManager().pausedNotifier,
+                builder: (_, paused, _) => IconButton(
+                  tooltip: paused ? 'Resume capture' : 'Pause capture',
+                  icon: Icon(
+                    paused
+                        ? Icons.play_circle_outline
+                        : Icons.pause_circle_outline,
+                  ),
+                  onPressed: paused
+                      ? EasyDebugManager().resumeRecording
+                      : EasyDebugManager().pauseRecording,
+                ),
               ),
-          ],
-        ),
-        child: const Icon(Icons.bug_report, color: Colors.white),
-      ),
-    );
-  }
-
-  Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: Colors.black.withValues(alpha: 0.05)),
-        ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          const Text(
-            'Easy Debug',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              IconButton(
+                tooltip: 'Clear logs',
+                onPressed: EasyDebugManager().clearLogs,
+                icon: const Icon(Icons.delete_sweep_outlined),
+              ),
+              IconButton(
+                tooltip: 'Close console',
+                onPressed: closeConsole,
+                icon: const Icon(Icons.close),
+              ),
+            ],
           ),
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.grey.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(8),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+          child: SizedBox(
+            width: double.infinity,
+            child: SegmentedButton<DebugViewMode>(
+              showSelectedIcon: false,
+              segments: const [
+                ButtonSegment(
+                  value: DebugViewMode.network,
+                  label: Text('Network'),
+                ),
+                ButtonSegment(
+                  value: DebugViewMode.generalLogs,
+                  label: Text('Logs'),
+                ),
+                ButtonSegment(
+                  value: DebugViewMode.settings,
+                  label: Text('Settings'),
+                ),
+              ],
+              selected: {_mode},
+              onSelectionChanged: (values) =>
+                  setState(() => _mode = values.first),
             ),
-            padding: const EdgeInsets.all(2),
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: switch (_mode) {
+            DebugViewMode.network => LogListView(
+              initialQuery: _networkQuery,
+              onQueryChanged: (query) => _networkQuery = query,
+              onSelect: (log) => setState(() => _selectedLog = log),
+            ),
+            DebugViewMode.generalLogs => GeneralLogsView(
+              initialQuery: _generalQuery,
+              onQueryChanged: (query) => _generalQuery = query,
+            ),
+            DebugViewMode.settings => const _EnvironmentSettings(),
+          },
+        ),
+        if (constraints.maxHeight >= 440)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Row(
               children: [
-                _buildTabIcon(Icons.wifi, DebugViewMode.network),
-                _buildTabIcon(Icons.notes, DebugViewMode.generalLogs),
-                _buildTabIcon(Icons.settings, DebugViewMode.settings),
+                Icon(
+                  Icons.circle,
+                  size: 7,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: ValueListenableBuilder<bool>(
+                    valueListenable: EasyDebugManager().pausedNotifier,
+                    builder: (_, paused, _) =>
+                        ValueListenableBuilder<AppEnvironment?>(
+                          valueListenable:
+                              EasyDebugManager().currentEnvNotifier,
+                          builder: (_, env, _) => Text(
+                            paused
+                                ? 'Capture paused'
+                                : env?.name ?? 'Live capture',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                        ),
+                  ),
+                ),
+                Flexible(
+                  child: Text(
+                    'Stored on this device',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ),
               ],
             ),
           ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            tooltip: "Clear Logs",
-            onPressed: () {
-              EasyDebugManager().clearLogs();
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.close),
-            onPressed: () => setState(() => _isConsoleVisible = false),
-          ),
-        ],
-      ),
-    );
+      ],
+    ),
+  );
+}
+
+/// MaterialApp.builder is above its Navigator, so controls need their own
+/// overlay for tooltips, selection handles and text-field menus.
+class _ConsoleOverlay extends StatefulWidget {
+  const _ConsoleOverlay({required this.child});
+  final Widget child;
+  @override
+  State<_ConsoleOverlay> createState() => _ConsoleOverlayState();
+}
+
+class _ConsoleOverlayState extends State<_ConsoleOverlay> {
+  late final _entry = OverlayEntry(builder: (_) => widget.child);
+  @override
+  void didUpdateWidget(_ConsoleOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _entry.markNeedsBuild();
   }
 
-  Widget _buildTabIcon(IconData icon, DebugViewMode mode) {
-    final isSelected = _viewMode == mode;
-    return GestureDetector(
-      onTap: () => setState(() => _viewMode = mode),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: isSelected ? Colors.white : Colors.transparent,
-          borderRadius: BorderRadius.circular(6),
-          boxShadow: isSelected
-              ? [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 2,
-                  ),
-                ]
-              : null,
-        ),
-        child: Icon(
-          icon,
-          size: 20,
-          color: isSelected ? Colors.blueAccent : Colors.grey,
-        ),
-      ),
-    );
+  @override
+  void dispose() {
+    _entry
+      ..remove()
+      ..dispose();
+    super.dispose();
   }
 
-  Widget _buildSettingsView() {
+  @override
+  Widget build(BuildContext context) => Overlay(initialEntries: [_entry]);
+}
+
+class _EnvironmentSettings extends StatelessWidget {
+  const _EnvironmentSettings();
+  @override
+  Widget build(BuildContext context) {
     final manager = EasyDebugManager();
     if (manager.availableEnvironments.isEmpty) {
-      return const Center(
-        child: Text(
-          "No environments configured.\nCall EasyDebugManager().init() first.",
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.grey),
-        ),
+      return const DebugEmptyState(
+        icon: Icons.dns_outlined,
+        title: 'Choose your environment',
+        message:
+            'Add your API environments during initialization to switch between them here.',
       );
     }
-
     return ValueListenableBuilder<AppEnvironment?>(
       valueListenable: manager.currentEnvNotifier,
-      builder: (context, currentEnv, _) {
-        return ListView(
-          children: [
-            const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Text(
-                "Select Environment",
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey,
-                ),
-              ),
-            ),
-            ...manager.availableEnvironments.map((env) {
-              final isSelected = currentEnv == env;
-              return ListTile(
-                title: Text(
-                  env.name,
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-                subtitle: Text(
-                  env.baseUrl,
-                  style: const TextStyle(fontSize: 12),
-                ),
-                trailing: isSelected
-                    ? const Icon(Icons.check_circle, color: Colors.blueAccent)
-                    : const Icon(Icons.circle_outlined, color: Colors.grey),
-                onTap: () {
-                  manager.changeEnvironment(env);
-                },
-              );
-            }),
-            const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: Text(
-                "Note: Switching environment might require a manual app restart if your Dio instance is not reactive.",
-                style: TextStyle(fontSize: 12, color: Colors.orange),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildFilterTabs() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Row(
+      builder: (context, selected, _) => ListView(
+        padding: const EdgeInsets.all(16),
         children: [
-          _buildTabItem("All", LogFilter.all),
-          const SizedBox(width: 8),
-          _buildTabItem("Success", LogFilter.success),
-          const SizedBox(width: 8),
-          _buildTabItem("Error", LogFilter.error),
+          Text(
+            'API ENVIRONMENT',
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
+          const SizedBox(height: 12),
+          for (final env in manager.availableEnvironments)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Card.filled(
+                color: selected == env
+                    ? Theme.of(context).colorScheme.primaryContainer
+                    : null,
+                child: ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 6,
+                  ),
+                  title: Text(
+                    env.name,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: Text(env.baseUrl),
+                  trailing: Icon(
+                    selected == env
+                        ? Icons.check_circle
+                        : Icons.circle_outlined,
+                  ),
+                  onTap: () async {
+                    try {
+                      await manager.changeEnvironment(env);
+                    } catch (_) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Could not save environment. Please try again.',
+                            ),
+                          ),
+                        );
+                      }
+                    }
+                  },
+                ),
+              ),
+            ),
+          const SizedBox(height: 12),
+          const Text(
+            'Your app must listen for environment changes to update its network clients.',
+          ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildTabItem(String label, LogFilter filter) {
-    final bool isSelected = _currentFilter == filter;
-    return Expanded(
-      child: GestureDetector(
-        onTap: () {
-          setState(() {
-            _currentFilter = filter;
-          });
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: isSelected ? Colors.blueAccent : Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: isSelected
-                  ? Colors.blueAccent
-                  : Colors.grey.withValues(alpha: 0.3),
-            ),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: isSelected ? Colors.white : Colors.black87,
-              fontWeight: FontWeight.w500,
-              fontSize: 13,
-            ),
-          ),
-        ),
       ),
     );
   }

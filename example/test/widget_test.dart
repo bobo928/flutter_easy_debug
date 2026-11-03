@@ -1,27 +1,28 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
+import 'package:easy_debug/easy_debug.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
 import 'package:easy_debug_example/main.dart';
 
 void main() {
-  testWidgets('Verify Platform version', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
+  testWidgets('demo exposes the console and switches its views', (
+    tester,
+  ) async {
+    final manager = EasyDebugManager();
+    manager.updateConfig(const EasyDebugConfig());
     await tester.pumpWidget(const MyApp());
-
-    // Verify that platform version is retrieved.
-    expect(
-      find.byWidgetPredicate(
-        (Widget widget) => widget is Text &&
-                           widget.data!.startsWith('Running on:'),
-      ),
-      findsOneWidget,
-    );
+    expect(find.text('Easy Debug Demo'), findsOneWidget);
+    expect(find.text('GET Success (200)'), findsOneWidget);
+    await tester.tap(find.byTooltip('Open Easy Debug'));
+    await tester.pumpAndSettle();
+    expect(find.text('Waiting for requests'), findsOneWidget);
+    await tester.tap(find.text('Logs'));
+    await tester.pumpAndSettle();
+    expect(find.text('A little more context'), findsOneWidget);
+    await tester.tap(find.byTooltip('Close console'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Open Easy Debug'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    manager.shutdown();
+    await tester.pump();
   });
 }

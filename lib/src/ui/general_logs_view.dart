@@ -1,129 +1,216 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../core/log_export.dart';
 import '../core/log_manager.dart';
 import '../core/log_model.dart';
+import '../core/log_query.dart';
+import 'debug_copy_button.dart';
+import 'debug_theme.dart';
 
-class GeneralLogsView extends StatelessWidget {
-  const GeneralLogsView({super.key});
-
+class GeneralLogsView extends StatefulWidget {
+  const GeneralLogsView({
+    super.key,
+    this.initialQuery = const GeneralLogQuery(),
+    this.onQueryChanged,
+  });
+  final GeneralLogQuery initialQuery;
+  final ValueChanged<GeneralLogQuery>? onQueryChanged;
   @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<List<GeneralLog>>(
-      valueListenable: EasyDebugManager().generalLogsNotifier,
-      builder: (context, logs, child) {
-        if (logs.isEmpty) {
-          return const Center(
-            child: Text(
-              "No logs yet.\nTry debugPrint('header', wrapWidth: 1024) or EasyDebug.log()",
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey, fontSize: 12),
-            ),
-          );
-        }
+  State<GeneralLogsView> createState() => _GeneralLogsViewState();
+}
 
-        // Auto-scroll to bottom behavior is nice for terminals,
-        // but for now let's just stick to a reversed list like Network logs
-        // (Newest on top is usually better for mobile inspection)
-        final reversedLogs = logs.reversed.toList();
-
-        return ListView.builder(
-          padding: EdgeInsets.zero, // Remove padding to let shading fill width
-          itemCount: reversedLogs.length,
-          itemBuilder: (context, index) {
-            final log = reversedLogs[index];
-            return _buildLogItem(context, log, index);
-          },
-        );
-      },
+class _GeneralLogsViewState extends State<GeneralLogsView> {
+  late String _query = widget.initialQuery.search;
+  late GeneralLogSeverity? _severity = widget.initialQuery.severity;
+  late final _search = TextEditingController(text: _query);
+  Timer? _debounce;
+  void _change(VoidCallback change) {
+    setState(change);
+    widget.onQueryChanged?.call(
+      GeneralLogQuery(search: _query, severity: _severity),
     );
   }
 
-  Widget _buildLogItem(BuildContext context, GeneralLog log, int index) {
-    final isEven = index % 2 == 0;
-    // Increased contrast from grey[50] to grey[200]
-    final backgroundColor = isEven ? Colors.white : Colors.grey[200];
-    final textColor = _getLogColor(log.message);
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _search.dispose();
+    super.dispose();
+  }
 
-    return Material(
-      color: backgroundColor,
-      child: InkWell(
-        onTap: () {
-          _copyToClipboard(context, log);
-        },
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Timestamp column
-              SizedBox(
-                width: 60,
-                child: Text(
-                  _formatTime(log.timestamp),
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Colors.grey,
-                    fontFamily: 'Courier',
-                    fontWeight: FontWeight.w500,
+  @override
+  Widget build(
+    BuildContext context,
+  ) => ValueListenableBuilder<List<GeneralLog>>(
+    valueListenable: EasyDebugManager().generalLogsNotifier,
+    builder: (context, allLogs, _) {
+      final selection = GeneralLogQuery(search: _query, severity: _severity);
+      final logs = allLogs.where(selection.matches).toList();
+      return CustomScrollView(
+        slivers: [
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _search,
+                      decoration: InputDecoration(
+                        hintText: 'Search messages',
+                        prefixIcon: const Icon(Icons.search),
+                        isDense: true,
+                        filled: true,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                      onChanged: (value) {
+                        _debounce?.cancel();
+                        _debounce = Timer(
+                          const Duration(milliseconds: 150),
+                          () => _change(() => _query = value),
+                        );
+                      },
+                    ),
                   ),
+                  DebugCopyButton(
+                    tooltip: 'Copy filtered logs as JSON',
+                    icon: Icons.file_download_outlined,
+                    content: () => EasyDebugExport.generalJsonAsync(logs),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: 44,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                children: [
+                  for (final severity in <GeneralLogSeverity?>[
+                    null,
+                    ...GeneralLogSeverity.values,
+                  ])
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: FilterChip(
+                        label: Text(switch (severity) {
+                          null => 'All',
+                          GeneralLogSeverity.debug => 'Debug',
+                          GeneralLogSeverity.info => 'Info',
+                          GeneralLogSeverity.warning => 'Warn',
+                          GeneralLogSeverity.error => 'Error',
+                        }),
+                        selected: _severity == severity,
+                        showCheckmark: false,
+                        onSelected: (_) => _change(() => _severity = severity),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (logs.isEmpty)
+            SliverFillRemaining(
+              hasScrollBody: false,
+              child: DebugEmptyState(
+                icon: Icons.terminal,
+                title: allLogs.isEmpty
+                    ? 'A little more context'
+                    : 'No matching messages',
+                message: allLogs.isEmpty
+                    ? 'Your debugPrint and EasyDebug.log messages appear here.'
+                    : 'Try another level or search term.',
+              ),
+            )
+          else
+            SliverPadding(
+              padding: const EdgeInsets.all(16),
+              sliver: SliverList.builder(
+                itemCount: logs.length,
+                itemBuilder: (context, index) =>
+                    _card(context, logs[logs.length - index - 1]),
+              ),
+            ),
+        ],
+      );
+    },
+  );
+
+  Widget _card(BuildContext context, GeneralLog log) {
+    final severity = severityOf(log);
+    final color = severity == GeneralLogSeverity.error
+        ? Theme.of(context).colorScheme.error
+        : severity == GeneralLogSeverity.warning
+        ? Theme.of(context).brightness == Brightness.dark
+              ? const Color(0xFFF6C76A)
+              : const Color(0xFF8A4B00)
+        : Theme.of(context).colorScheme.primary;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Card.filled(
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () async {
+            await Clipboard.setData(ClipboardData(text: log.message));
+            if (context.mounted) {
+              ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                const SnackBar(
+                  content: Text('Log copied'),
+                  duration: Duration(seconds: 1),
                 ),
-              ),
-              const SizedBox(width: 8),
-              // Separator line
-              Container(
-                width: 1,
-                height: 14,
-                color: Colors.grey.withValues(alpha: 0.2),
-                margin: const EdgeInsets.only(top: 2, right: 8),
-              ),
-              // Message column
-              Expanded(
-                child: Text(
+              );
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.circle, size: 6, color: color),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        log.level ?? severity.name.toUpperCase(),
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: color,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      formatTime(log.timestamp),
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                    const SizedBox(width: 8),
+                    const Icon(Icons.copy_outlined, size: 12),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
                   log.message,
-                  style: TextStyle(
+                  maxLines: 8,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
                     fontSize: 12,
-                    color: textColor,
-                    fontFamily: 'Courier',
-                    height: 1.3,
+                    height: 1.5,
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
-  }
-
-  Color _getLogColor(String message) {
-    final lower = message.toLowerCase();
-    if (lower.contains('error') ||
-        lower.contains('exception') ||
-        lower.contains('fail')) {
-      return Colors.red[700]!;
-    }
-    if (lower.contains('warning') || lower.contains('warn')) {
-      return Colors.orange[800]!;
-    }
-    if (lower.contains('info') || lower.contains('debug')) {
-      return Colors.blue[700]!;
-    }
-    return Colors.black87;
-  }
-
-  void _copyToClipboard(BuildContext context, GeneralLog log) {
-    Clipboard.setData(ClipboardData(text: log.message));
-    ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Log copied to clipboard'),
-        duration: Duration(milliseconds: 600),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  String _formatTime(DateTime dt) {
-    return "${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}";
   }
 }

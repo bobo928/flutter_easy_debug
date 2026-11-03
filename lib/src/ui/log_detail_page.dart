@@ -1,240 +1,200 @@
-import 'package:flutter/material.dart';
 import 'dart:convert';
-import '../core/log_model.dart';
-
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../core/log_manager.dart';
+import '../core/log_model.dart';
+import '../core/log_export.dart';
+import 'debug_copy_button.dart';
+import 'debug_theme.dart';
 
 class LogDetailPage extends StatefulWidget {
+  const LogDetailPage({super.key, required this.log, this.onBack});
   final NetworkLog log;
-
-  const LogDetailPage({super.key, required this.log});
-
+  final VoidCallback? onBack;
   @override
   State<LogDetailPage> createState() => _LogDetailPageState();
 }
 
-class _LogDetailPageState extends State<LogDetailPage>
-    with SingleTickerProviderStateMixin {
-  late TabController _tabController;
+class _LogDetailPageState extends State<LogDetailPage> {
+  int _tab = 0;
+  late NetworkLog _latest = widget.log;
 
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-  }
-
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
-  }
-
-  void _copyContent() {
-    String content = "";
-    if (_tabController.index == 0) {
-      // Request
-      final headers = widget.log.request?.headers;
-      final body = widget.log.request?.body;
-      content = "URL: ${widget.log.url}\nMethod: ${widget.log.method}\n";
-      content += "Headers: ${_formatJson(headers)}\n";
-      content += "Body: ${_formatJson(body)}";
-    } else {
-      // Response
-      final headers = widget.log.response?.headers;
-      final body = widget.log.response?.body;
-      content = "Status: ${widget.log.statusCode}\n";
-      content += "Headers: ${_formatJson(headers)}\n";
-      content += "Body: ${_formatJson(body)}";
+  String _format(dynamic value) {
+    if (value == null) return 'No body';
+    if (value is Map || value is List) {
+      return const JsonEncoder.withIndent('  ').convert(value);
     }
-
-    Clipboard.setData(ClipboardData(text: content));
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
-  }
-
-  String _formatJson(dynamic data) {
-    if (data == null) return "null";
     try {
-      if (data is Map || data is List) {
-        return const JsonEncoder.withIndent('  ').convert(data);
-      }
-      return data.toString();
+      return const JsonEncoder.withIndent(
+        '  ',
+      ).convert(jsonDecode(value.toString()));
     } catch (_) {
-      return data.toString();
+      return value.toString();
     }
   }
 
   @override
-  Widget build(BuildContext context) {
-    final log = widget.log;
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('${log.method} Details'),
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.copy),
-            tooltip: "Copy Current Tab",
-            onPressed: _copyContent,
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Container(
-            color: Theme.of(context).primaryColor.withValues(alpha: 0.05),
-            padding: const EdgeInsets.all(16.0),
-            width: double.infinity,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SelectableText(
-                  log.url,
-                  style: const TextStyle(fontWeight: FontWeight.w500),
+  Widget build(BuildContext context) => Theme(
+    data: debugTheme(Theme.of(context).brightness),
+    child: ValueListenableBuilder<List<NetworkLog>>(
+      valueListenable: EasyDebugManager().logsNotifier,
+      builder: (context, logs, _) {
+        _latest = EasyDebugManager().getLog(widget.log.id) ?? _latest;
+        final log = _latest;
+        final request = _tab == 0;
+        final headers = request ? log.request?.headers : log.response?.headers;
+        final body = request ? log.request?.body : log.response?.body;
+        final truncated = request
+            ? log.request?.bodyTruncated ?? false
+            : log.response?.bodyTruncated ?? false;
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('Request details'),
+            leading: widget.onBack == null
+                ? null
+                : IconButton(
+                    tooltip: 'Back to requests',
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: widget.onBack,
+                  ),
+            actions: [
+              DebugCopyButton(
+                tooltip: 'Copy as cURL',
+                icon: Icons.terminal,
+                content: () => EasyDebugExport.curl(
+                  _latest,
+                  config: EasyDebugManager().config,
                 ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    _buildTag(
-                      log.statusCode.toString(),
-                      _getStatusColor(log.statusCode),
-                    ),
-                    const SizedBox(width: 8),
-                    Text('${log.durationMs ?? 0} ms'),
-                    const SizedBox(width: 8),
-                    Text(log.timestamp.toString().split('.')[0]),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          TabBar(
-            controller: _tabController,
-            labelColor: Colors.blue,
-            unselectedLabelColor: Colors.grey,
-            tabs: const [
-              Tab(text: "Request"),
-              Tab(text: "Response"),
+              ),
+              IconButton(
+                tooltip: 'Copy details',
+                icon: const Icon(Icons.copy_outlined),
+                onPressed: () async {
+                  final text =
+                      'URL: ${log.url}\nMethod: ${log.method}\nStatus: ${logStatus(log)}\n'
+                      '${log.error == null ? '' : 'Error: ${log.error!.errorMessage}\n'}'
+                      'Headers: ${_format(headers)}\nBody: ${_format(body)}'
+                      '${truncated ? '\n[Body truncated]' : ''}';
+                  await Clipboard.setData(ClipboardData(text: text));
+                  if (context.mounted) {
+                    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                      const SnackBar(content: Text('Details copied')),
+                    );
+                  }
+                },
+              ),
             ],
           ),
-          Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: [_buildRequestView(), _buildResponseView()],
+          body: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        DebugBadge(log.method),
+                        DebugBadge(
+                          logStatus(log),
+                          color: statusColor(context, log),
+                        ),
+                        if (log.durationMs != null)
+                          DebugBadge('${log.durationMs} ms'),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    SelectableText(
+                      log.url,
+                      minLines: 1,
+                      maxLines: 3,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: SegmentedButton<int>(
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(value: 0, label: Text('Request')),
+                    ButtonSegment(value: 1, label: Text('Response')),
+                  ],
+                  selected: {_tab},
+                  onSelectionChanged: (value) =>
+                      setState(() => _tab = value.first),
+                ),
+              ),
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    if (!request && log.isPending)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 12),
+                        child: Text('Waiting for response…'),
+                      ),
+                    if (!request && log.error != null)
+                      _section(
+                        context,
+                        'Error',
+                        '${log.error!.errorMessage}\n${log.error!.stackTrace ?? ''}',
+                      ),
+                    _section(context, 'Headers', _format(headers)),
+                    if (truncated)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          'Body truncated · capture limit reached',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ),
+                    _section(context, 'Body', _format(body)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    ),
+  );
+
+  Widget _section(BuildContext context, String title, String text) => Padding(
+    padding: const EdgeInsets.only(bottom: 16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          title.toUpperCase(),
+          style: Theme.of(context).textTheme.labelSmall,
+        ),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: SelectableText(
+            text,
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 12,
+              height: 1.5,
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildRequestView() {
-    final log = widget.log;
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildSectionTitle("Headers"),
-          _buildJsonViewer(log.request?.headers),
-          const SizedBox(height: 16),
-          _buildSectionTitle("Body"),
-          _buildJsonViewer(log.request?.body),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildResponseView() {
-    final log = widget.log;
-    if (log.isError && log.response == null) {
-      return Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              "Error Occurred",
-              style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(log.error?.errorMessage ?? "Unknown Error"),
-            const SizedBox(height: 8),
-            Text(
-              log.error?.stackTrace ?? "",
-              style: const TextStyle(fontSize: 10),
-            ),
-          ],
         ),
-      );
-    }
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildSectionTitle("Headers"),
-          _buildJsonViewer(log.response?.headers),
-          const SizedBox(height: 16),
-          _buildSectionTitle("Body"),
-          _buildJsonViewer(log.response?.body),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSectionTitle(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8.0),
-      child: Text(
-        title,
-        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-      ),
-    );
-  }
-
-  Widget _buildJsonViewer(dynamic data) {
-    final formatted = _formatJson(data);
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.grey[100],
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey[300]!),
-      ),
-      child: SelectableText(
-        formatted,
-        style: const TextStyle(fontFamily: 'Courier', fontSize: 12),
-      ),
-    );
-  }
-
-  Color _getStatusColor(int code) {
-    if (code >= 200 && code < 300) return Colors.green;
-    if (code >= 300 && code < 400) return Colors.orange;
-    if (code >= 400) return Colors.red;
-    return Colors.grey;
-  }
-
-  Widget _buildTag(String text, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: color),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: color,
-          fontWeight: FontWeight.bold,
-          fontSize: 12,
-        ),
-      ),
-    );
-  }
+      ],
+    ),
+  );
 }

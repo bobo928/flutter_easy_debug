@@ -1,8 +1,8 @@
 name: easy_debug
-description: A pure Dart in-app network debugger for Flutter. visualize Dio requests with a floating overlay, detailed inspection, and log management.
+description: An in-app Flutter debugger for Dio and http, with bounded logs, request inspection, environment switching and a floating console.
 version: 0.0.4
 # homepage: https://www.example.com
-repository: https://github.com/JasonBoolean/flutter_easy_debug
+repository: https://github.com/bobo928/flutter_easy_debug
 
 environment:
   sdk: ^3.10.1
@@ -21,3 +21,4 @@ dev_dependencies:
   flutter_lints: ^6.0.0
 
 flutter:
+  uses-material-design: true
