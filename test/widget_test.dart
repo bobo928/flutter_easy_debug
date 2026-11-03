@@ -54,10 +54,12 @@ void main() {
 
   Future<void> capture(WidgetTester tester, String name) async {
     if (captureDir == null) return;
+    final boundary = tester.renderObject<RenderRepaintBoundary>(
+      find.byKey(const ValueKey('easy_debug_panel')),
+    );
+    boundary.markNeedsPaint();
+    await tester.pump();
     await tester.runAsync(() async {
-      final boundary = tester.renderObject<RenderRepaintBoundary>(
-        find.byKey(const ValueKey('easy_debug_panel')),
-      );
       final image = await boundary.toImage(pixelRatio: 2);
       final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
       await Directory(captureDir).create(recursive: true);
@@ -165,6 +167,7 @@ void main() {
       expect(find.text('Waiting for response…'), findsNothing);
       expect(find.textContaining('Connection interrupted'), findsOneWidget);
       expect(find.textContaining('service unavailable'), findsOneWidget);
+      expect(tester.getTopLeft(find.text('Request details')).dy, lessThan(80));
       await capture(tester, 'request_details');
       await tester.tap(find.byTooltip('Back to requests'));
       await tester.pumpAndSettle();
