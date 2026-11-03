@@ -1,163 +1,210 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import '../core/easy_debug_navigator_observer.dart';
 import '../core/log_manager.dart';
 import '../core/log_model.dart';
-import '../core/easy_debug_navigator_observer.dart';
-import 'easy_debug_widget.dart';
+import 'debug_theme.dart';
 import 'log_detail_page.dart';
 
-enum LogFilter { all, success, error }
+enum LogFilter { all, success, error, pending }
 
-class LogListView extends StatelessWidget {
+class LogListView extends StatefulWidget {
+  const LogListView({super.key, this.filter = LogFilter.all, this.onSelect});
   final LogFilter filter;
-
-  const LogListView({super.key, this.filter = LogFilter.all});
-
+  final ValueChanged<NetworkLog>? onSelect;
   @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<List<NetworkLog>>(
-      valueListenable: EasyDebugManager().logsNotifier,
-      builder: (context, allLogs, child) {
-        // Apply filter
-        final logs = allLogs.where((log) {
-          switch (filter) {
-            case LogFilter.all:
-              return true;
-            case LogFilter.success:
-              return !log.isError &&
-                  log.statusCode >= 200 &&
-                  log.statusCode < 400;
-            case LogFilter.error:
-              return log.isError || log.statusCode >= 400;
-          }
-        }).toList();
-
-        if (logs.isEmpty) {
-          return const Center(child: Text("No logs found."));
-        }
-        return ListView.separated(
-          itemCount: logs.length,
-          separatorBuilder: (context, index) => const Divider(height: 1),
-          itemBuilder: (context, index) {
-            final log = logs[index];
-            return _buildLogItem(context, log);
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildLogItem(BuildContext context, NetworkLog log) {
-    Color statusColor;
-    final statusCode = log.statusCode;
-    if (statusCode >= 200 && statusCode < 300) {
-      statusColor = Colors.green;
-    } else if (statusCode >= 300 && statusCode < 400) {
-      statusColor = Colors.orange;
-    } else if (statusCode >= 400) {
-      statusColor = Colors.red;
-    } else if (log.isError) {
-      statusColor = Colors.red;
-    } else {
-      statusColor = Colors.grey;
-    }
-
-    return ListTile(
-      dense: true,
-      onTap: () {
-        EasyDebugWidget.close(context);
-        final route = MaterialPageRoute(
-          builder: (_) => LogDetailPage(log: log),
-        );
-
-        // 1. Try using the observer (Best for getting the top-most context)
-        if (EasyDebugNavigatorObserver.navigatorState != null) {
-          EasyDebugNavigatorObserver.navigatorState!.push(route);
-          return;
-        }
-
-        // 2. Fallback: Use the context from the overlay
-        // We use rootNavigator: true to break out of any nested navigators
-        try {
-          Navigator.of(context, rootNavigator: true).push(route);
-        } catch (e) {
-          debugPrint(
-            'EasyDebug: Navigation failed. Please add EasyDebugNavigatorObserver to your MaterialApp/GoRouter.',
-          );
-        }
-      },
-      leading: Container(
-        width: 50,
-        alignment: Alignment.center,
-        child: Text(
-          log.method.toUpperCase(),
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            fontSize: 12,
-            color: _getMethodColor(log.method),
-          ),
-        ),
-      ),
-      title: Text(
-        log.url,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 13),
-      ),
-      subtitle: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-            decoration: BoxDecoration(
-              color: statusColor.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: statusColor, width: 0.5),
-            ),
-            child: Text(
-              statusCode > 0 ? statusCode.toString() : '---',
-              style: TextStyle(
-                color: statusColor,
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            DateFormatting.formatTimestamp(log.timestamp),
-            style: const TextStyle(fontSize: 10, color: Colors.grey),
-          ),
-        ],
-      ),
-      trailing: Text(
-        log.durationMs != null ? '${log.durationMs} ms' : '',
-        style: TextStyle(
-          fontSize: 11,
-          color: (log.durationMs ?? 0) > 1000
-              ? Colors.orange
-              : Colors.grey[600],
-        ),
-      ),
-    );
-  }
-
-  Color _getMethodColor(String method) {
-    switch (method.toUpperCase()) {
-      case 'GET':
-        return Colors.blue;
-      case 'POST':
-        return Colors.purple;
-      case 'PUT':
-        return Colors.orange;
-      case 'DELETE':
-        return Colors.red;
-      default:
-        return Colors.black;
-    }
-  }
+  State<LogListView> createState() => _LogListViewState();
 }
 
-class DateFormatting {
-  static String formatTimestamp(DateTime dt) {
-    return "${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}";
+class _LogListViewState extends State<LogListView> {
+  late LogFilter _filter = widget.filter;
+  String _query = '';
+  Timer? _debounce;
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    super.dispose();
   }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+        child: TextField(
+          decoration: InputDecoration(
+            hintText: 'Search URL or method',
+            prefixIcon: const Icon(Icons.search),
+            filled: true,
+            fillColor: Theme.of(context).colorScheme.surfaceContainerLow,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none,
+            ),
+            isDense: true,
+          ),
+          onChanged: (value) {
+            _debounce?.cancel();
+            _debounce = Timer(
+              const Duration(milliseconds: 150),
+              () => setState(() => _query = value.toLowerCase()),
+            );
+          },
+        ),
+      ),
+      SizedBox(
+        height: 44,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          children: [
+            for (final filter in LogFilter.values)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: FilterChip(
+                  label: Text(switch (filter) {
+                    LogFilter.all => 'All',
+                    LogFilter.success => 'Success',
+                    LogFilter.error => 'Error',
+                    LogFilter.pending => 'Pending',
+                  }),
+                  selected: _filter == filter,
+                  showCheckmark: false,
+                  onSelected: (_) => setState(() => _filter = filter),
+                ),
+              ),
+          ],
+        ),
+      ),
+      Expanded(
+        child: ValueListenableBuilder<List<NetworkLog>>(
+          valueListenable: EasyDebugManager().logsNotifier,
+          builder: (context, allLogs, _) {
+            final logs = allLogs.where((log) {
+              final matches = switch (_filter) {
+                LogFilter.all => true,
+                LogFilter.success =>
+                  !log.isPending &&
+                      !log.isCancelled &&
+                      !log.isError &&
+                      log.statusCode >= 200 &&
+                      log.statusCode < 400,
+                LogFilter.error => log.isError,
+                LogFilter.pending => log.isPending,
+              };
+              return matches &&
+                  (log.url.toLowerCase().contains(_query) ||
+                      log.method.toLowerCase().contains(_query));
+            }).toList();
+            if (logs.isEmpty) {
+              return DebugEmptyState(
+                icon: Icons.travel_explore,
+                title: allLogs.isEmpty
+                    ? 'Waiting for requests'
+                    : 'No matching requests',
+                message: allLogs.isEmpty
+                    ? 'Make a request in your app to inspect it here.'
+                    : 'Try another filter or search term.',
+              );
+            }
+            return ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              itemCount: logs.length,
+              itemBuilder: (context, index) {
+                final log = logs[index];
+                final uri = Uri.tryParse(log.url);
+                return Padding(
+                  key: ValueKey(log.id),
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Card.filled(
+                    margin: EdgeInsets.zero,
+                    clipBehavior: Clip.antiAlias,
+                    child: InkWell(
+                      onTap: () {
+                        if (widget.onSelect != null) {
+                          widget.onSelect!(log);
+                          return;
+                        }
+                        final navigator =
+                            EasyDebugNavigatorObserver.navigatorState ??
+                            Navigator.maybeOf(context);
+                        navigator?.push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => LogDetailPage(log: log),
+                          ),
+                        );
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                DebugBadge(log.method.toUpperCase()),
+                                const Spacer(),
+                                DebugBadge(
+                                  logStatus(log),
+                                  color: statusColor(context, log),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              uri?.path.isNotEmpty == true
+                                  ? uri!.path
+                                  : log.url,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 5),
+                            Text(
+                              uri?.host ?? log.url,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                                  ),
+                            ),
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    formatTime(log.timestamp),
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.labelSmall,
+                                  ),
+                                ),
+                                Text(
+                                  log.durationMs == null
+                                      ? 'In progress'
+                                      : '${log.durationMs} ms',
+                                  style: Theme.of(context).textTheme.labelSmall,
+                                ),
+                                const SizedBox(width: 4),
+                                const Icon(Icons.arrow_forward_ios, size: 10),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            );
+          },
+        ),
+      ),
+    ],
+  );
 }

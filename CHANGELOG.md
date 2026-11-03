@@ -1,3 +1,18 @@
+## Unreleased
+
+* Bound network/general logs, UTF-8 body/message previews and structured body traversal; coalesce subscriber notifications during bursts.
+* Use unique request IDs and constant-time log lookup; remove the unused Dio request map.
+* Preserve http stream errors, forward pause/resume/cancellation and capture headers before body consumption without altering caller payloads.
+* Make debugPrint initialization idempotent, add shutdown and implement EasyDebug.log.
+* Disable capture/UI by default in release builds; add configurable sensitive-header and structured-credential masking.
+* Refresh the console with adaptive light/dark cards, search, pending filters, bounded dragging and live details inside the console.
+* Replace the stale example test, add network/manager/widget regressions and a verification workflow; update setup and release documentation.
+
+## 0.0.4
+
+* Add standard http client support and a separate general-log view.
+* Add debugPrint capture and update the debug console layout.
+
 ## 0.0.3
 
 *   **[DOCS] Update README**: Added comprehensive documentation for Environment Switcher feature.

@@ -163,9 +163,7 @@ class _HomePageState extends State<HomePage> {
           ElevatedButton(
             onPressed: () {
               debugPrint('This is a test log at ${DateTime.now()}');
-              print(
-                'This print() might be captured if we used runZoned, but for now debugPrint is safer.',
-              );
+              EasyDebug.log('An explicit application log', level: 'INFO');
               debugPrint('Warning: This is a simulated warning message.');
               debugPrint('Error: This is a simulated error message!');
             },

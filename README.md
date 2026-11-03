@@ -1,187 +1,167 @@
 # Easy Debug
 
-A pure Dart, lightweight, and powerful in-app network debugger for Flutter.
-`easy_debug` provides a floating overlay to monitor your Dio network requests in real-time, inspect details, and manage logs without connecting to an external debugger.
+An in-app Flutter console for inspecting **Dio**, **http** and application logs.
+Open the floating button to see requests, inspect responses, copy details and switch API environments.
 
-## Screenshots
-
-<div style="text-align: center">
-  <img src="screenshots/1.png" width="30%" />
-  <img src="screenshots/2.png" width="30%" />
-  <img src="screenshots/3.png" width="30%" />
-</div>
-<div style="text-align: center">
-  <img src="screenshots/4.png" width="30%" />
-  <img src="screenshots/5.png" width="30%" />
-</div>
+<p align="center">
+  <img src="screenshots/1.png" width="30%" alt="Network inspector" />
+  <img src="screenshots/2.png" width="30%" alt="Dark application logs" />
+  <img src="screenshots/3.png" width="30%" alt="Live request details" />
+</p>
 
 ## Features
 
-*   🚀 **Pure Dart**: No native dependencies, works on all Flutter platforms (Android, iOS, Web, Desktop).
-*   🌐 **Universal Network Support**: Supports both **Dio** and standard **http** package.
-*   📝 **General Logs**: Capture `debugPrint` and `EasyDebug.log` messages in a dedicated terminal-style tab.
-*   📱 **Floating Overlay**: Always accessible Draggable floating button.
-*   💎 **Glassmorphism UI**: Modern, semi-transparent design.
-*   🌍 **Environment Switcher**: Switch API environments (Dev/Prod) at runtime with persistence.
-*   🔍 **Detailed Inspection**: View headers, body, timestamp, and duration for Requests and Responses.
-*   📂 **Categorization**: Filter network logs by "All", "Success", or "Error" tabs.
-*   📋 **Smart Copy**: One-tap copy for Request/Response/Log content.
-*   🧹 **Log Management**: Auto-clearing (optional) and manual clear support.
+- Dio interceptor and an http client wrapper; existing caller responses and errors pass through.
+- Request cards, URL/method search, success/error/pending filters and live details.
+- Light and dark themes, adaptive panel width, draggable button with screen bounds, keyboard-aware layout.
+- Request/response headers and body previews, duration, errors and clipboard copy.
+- Bounded network/general logs and body previews; burst notifications are coalesced.
+- Environment selection persisted with shared_preferences.
+- Capture and UI disabled by default in release builds.
+
+The package implementation is Dart/Flutter. Environment persistence uses the shared_preferences platform plugin. This repository includes Android/iOS example projects; platform support also depends on those dependencies and your host application.
 
 ## Installation
 
-Add `easy_debug` to your `pubspec.yaml`:
+Use the Git checkout while evaluating these changes:
 
 ```yaml
 dependencies:
   easy_debug:
-    path: ./ # Or git/pub version
+    git:
+      url: https://github.com/bobo928/flutter_easy_debug.git
+      ref: main
 ```
 
-## Setup
+Dart 3.10.1 or newer (below 4.0) is required, together with a compatible Flutter SDK.
+The verification workflow currently uses Flutter 3.44.7 / Dart 3.12.2.
 
-### 1. Initialize & Wrap MaterialApp
-
-Wrap your app with `EasyDebugWidget` using the `builder` property of `MaterialApp` (or `CupertinoApp`).
-Also, add the `EasyDebugNavigatorObserver` to handle navigation correctly (e.g., closing overlay on page changes or handling context).
+## Initialize and display the console
 
 ```dart
 import 'package:easy_debug/easy_debug.dart';
+import 'package:flutter/material.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await EasyDebugManager().init(); // Enables debugPrint capture; idempotent.
   runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Easy Debug Example',
-      // 1. Wrap your app in the builder
-      builder: (context, child) {
-        return EasyDebugWidget(child: child!);
-      },
-      // 2. Add the navigator observer
-      navigatorObservers: [
-        EasyDebugNavigatorObserver(),
-      ],
-      home: const MyHomePage(),
-    );
-  }
+  Widget build(BuildContext context) => MaterialApp(
+    builder: (context, child) => EasyDebugWidget(child: child!),
+    navigatorObservers: [EasyDebugNavigatorObserver()],
+    home: const Scaffold(body: Center(child: Text('My app'))),
+  );
 }
 ```
 
-### 2. Add Dio Interceptor
+Tap the bug button to open the console. Details stay inside the console and update when a request finishes, without pushing a host application route. Escape or the close button dismisses the console. The observer is needed only if you want automatic clearing when host routes are pushed.
 
-Attach the `EasyDebugDioInterceptor` to your Dio instance to start capturing network events.
-
-```dart
-final dio = Dio();
-
-// Add the interceptor
-dio.interceptors.add(EasyDebugDioInterceptor());
-```
-
-### 3. Usage with clean `http` package (If necessary)
-
-To debug requests made with the `http` package, simply wrap your client with `EasyDebugHttpClient`.
+## Connect the clients you actually use
 
 ```dart
-import 'package:http/http.dart' as http;
-import 'package:easy_debug/easy_debug.dart';
+final dio = Dio()..interceptors.add(EasyDebugDioInterceptor());
 
 final client = EasyDebugHttpClient(http.Client());
-
-// Use as normal
-final response = await client.get(Uri.parse('https://example.com'));
+final response = await client.get(Uri.parse('https://example.com/data'));
+// Close the wrapper when the owning component is disposed.
+client.close();
 ```
 
-## Environment Switching
+Import http as usual: `import 'package:http/http.dart' as http;`.
 
-Easy Debug allows you to switch API environments (e.g., Dev, Test, Prod) at runtime.
+Requests from other client instances are not captured. Multipart/streamed request bodies are represented by a placeholder. Binary bodies are not rendered as JSON.
 
-### 1. Initialize Environments
+The http wrapper retains at most a bounded response prefix, forwards chunks and pause/resume to the source, and records cancellation. Headers are available before body consumption; a response is pending until its stream completes. Duration includes time spent consuming that stream. A stream that is never listened to remains pending.
 
-Initialize the manager with your environment list in `main()` before `runApp`.
+## Application logs
 
 ```dart
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  
-  await EasyDebugManager().init(environments: [
-      const AppEnvironment(
-        name: 'Production',
-        baseUrl: 'https://api.example.com',
-        isDefault: true,
-      ),
-       const AppEnvironment(
-        name: 'Development',
-        baseUrl: 'https://dev.api.example.com',
-        baseUrl: 'https://dev.api.example.com',
-      ),
-  ]);
-  
-  runApp(const MyApp());
-}
+debugPrint('A message captured after init()');
+EasyDebug.log('Cache refreshed', level: 'INFO');
+EasyDebugManager().addGeneralLog('Explicit log entry');
 ```
 
-### 2. Use Dynamic Base URL
+Ordinary `print()` and other isolates are not intercepted. Levels are optional. Tap a log card to copy the complete retained message.
 
-Update your Dio client to listen for environment changes.
+Call `EasyDebugManager().shutdown()` to stop recording, clear retained logs and restore the debugPrint hook installed by this package. It does not overwrite a replacement hook installed later by another component. Re-enable configuration and call `init()` to start a new session.
+
+## Resource limits and capture policy
 
 ```dart
-class _MyAppState extends State<MyApp> {
-  final Dio _dio = Dio();
-
-  @override
-  void initState() {
-    super.initState();
-    // Set initial URL
-    _dio.options.baseUrl = EasyDebugManager().currentBaseUrl;
-    
-    // Listen for changes
-    EasyDebugManager().currentEnvNotifier.addListener(() {
-      final newEnv = EasyDebugManager().currentEnvNotifier.value;
-      if (newEnv != null) {
-        _dio.options.baseUrl = newEnv.baseUrl;
-      }
-    });
-  }
-}
+EasyDebugManager().updateConfig(const EasyDebugConfig(
+  // Defaults to false in release builds; omit to keep that default.
+  enabled: true,
+  maxLogCount: 50,
+  maxGeneralLogCount: 200,
+  maxBodyBytes: 65536,
+  maxMessageLength: 4000,
+  clearOnNavigation: false,
+));
 ```
 
-## Usage
+Zero record capacity disables retention of that log type. Limits must be non-negative and message length must be positive. Reducing a limit trims retained data. Disabling capture clears records, hides the overlay and bypasses instrumentation for new requests.
 
-*   **Open Console**: Tap the 🐞 floating button.
-*   **Switch Views**: Use the header tabs to switch between **Network**, **Logs**, and **Settings**.
-*   **Network Tab**: View Dio/Http requests. Filter by "All", "Success", or "Error".
-*   **Logs Tab**: View `debugPrint` output with timestamp and coloring. Tap any row to copy.
-*   **Settings Tab**: Switch environments.
-*   **View Details**: Tap any network log item to see full Request/Response details.
-*   **Smart Copy**: Tap the copy icon in detailed view, or tap any row in the Logs tab to copy content.
-*   **Clear Logs**: Tap the Trash icon in the console header.
+- Each request/response body preview is bounded in UTF-8 bytes. Truncated previews are labeled in details and copied output. Large structured bodies are traversed only up to the preview budget, with a nesting-depth limit.
+- Incomplete or oversized JSON text is omitted when it cannot be safely parsed within the budget; caller data remains intact.
+- General message length is also a UTF-8 byte budget. Headers are limited to 100 entries, with bounded names and values.
+- Sensitive headers (Authorization, Cookie, Set-Cookie, Proxy-Authorization, X-API-Key) are masked by default. Common credential keys are masked in structured JSON and URL queries. Customize `sensitiveHeaders` and `sensitiveKeys` if your API uses other names.
+- Plain-text bodies, error text and application log messages are not automatically scrubbed. Avoid logging secrets in those channels.
+- Stored log values update immediately. Subscriber notifications are batched once per event-loop turn, so a burst does not cause a notification for every log entry.
+- Logs are held in memory only; environment selection is the only persisted data.
 
-## Configuration
+Keep debug capture disabled for normal release distribution. If you explicitly enable it, apply the policies appropriate to that build.
 
-You can configure global settings via `EasyDebugManager`.
+## Environment switching
 
 ```dart
-EasyDebugManager().updateConfig(
-  EasyDebugConfig(
-    maxLogCount: 100, // Maximum logs to keep in memory
-    clearOnNavigation: false, // Auto clear logs when navigating pages
+await EasyDebugManager().init(environments: const [
+  AppEnvironment(
+    name: 'Production',
+    baseUrl: 'https://api.example.com',
+    isDefault: true,
   ),
-);
+  AppEnvironment(
+    name: 'Development',
+    baseUrl: 'https://dev.example.com',
+  ),
+]);
 ```
 
+The manager restores a saved environment name, then falls back to the default or first entry. Names should be unique. The host must update its clients:
 
-## Author
+```dart
+void onEnvironmentChanged() {
+  dio.options.baseUrl = EasyDebugManager().currentBaseUrl;
+}
 
-Created by **JasonBoolean**.
+onEnvironmentChanged();
+EasyDebugManager().currentEnvNotifier.addListener(onEnvironmentChanged);
+// Remove the listener when its owner is disposed.
+EasyDebugManager().currentEnvNotifier.removeListener(onEnvironmentChanged);
+```
+
+For http, construct new request URIs from the current base URL. Switching environments does not rewrite requests already in flight.
+
+## Development
+
+```sh
+flutter pub get
+dart format --output=none --set-exit-if-changed lib test example/lib example/test
+flutter analyze --no-pub
+flutter test --no-pub
+cd example
+flutter test --no-pub
+```
+
+Tests use local adapters and streams, not public API endpoints. They cover retention, redaction, repeated initialization, concurrent HTTP requests, stream errors/cancellation/backpressure, and console interaction at phone and desktop sizes.
+
+See [CHANGELOG.md](CHANGELOG.md) for changes and [PUBLISHING.md](PUBLISHING.md) for release checks.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
+MIT. Original project by JasonBoolean.
